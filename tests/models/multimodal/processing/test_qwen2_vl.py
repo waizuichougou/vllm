@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from unittest.mock import patch
+
 import pytest
 import torch
 from packaging.version import Version
@@ -62,6 +64,67 @@ def test_jina_vl_processing_order() -> None:
         document["mm_placeholders"]["image"][0].length,
         query["mm_placeholders"]["image"][0].length,
     ]
+
+
+def test_repeated_images_in_one_request_share_processor_cache_miss(
+    image_assets: ImageTestAssets,
+) -> None:
+    """Duplicate cache misses should share one HF processor invocation."""
+    ctx = build_model_context(
+        "Qwen/Qwen2-VL-2B-Instruct",
+        limit_mm_per_prompt={"image": 4},
+        mm_processor_cache_gb=1,
+    )
+    cache = MultiModalProcessorOnlyCache(ctx.model_config)
+    processor = MULTIMODAL_REGISTRY.create_processor(
+        ctx.model_config,
+        tokenizer=ctx.tokenizer,
+        cache=cache,
+    )
+
+    images = [
+        image_assets[0].pil_image,
+        image_assets[0].pil_image,
+        image_assets[1].pil_image,
+        image_assets[0].pil_image,
+    ]
+    mm_items = processor.info.parse_mm_data({"image": images})
+    prompt = "<|vision_start|><|image_pad|><|vision_end|>" * len(images)
+
+    baseline_processor = MULTIMODAL_REGISTRY.create_processor(
+        ctx.model_config,
+        tokenizer=ctx.tokenizer,
+    )
+    baseline = baseline_processor(
+        prompt,
+        mm_items=baseline_processor.info.parse_mm_data({"image": images}),
+    )
+
+    with patch.object(
+        processor,
+        "_apply_hf_processor_main",
+        wraps=processor._apply_hf_processor_main,
+    ) as apply_hf_processor:
+        result = processor(
+            prompt,
+            mm_items=mm_items,
+        )
+
+    assert apply_hf_processor.call_count == 1
+    assert apply_hf_processor.call_args.kwargs["mm_items"].get_all_counts() == {
+        "image": 2
+    }
+    assert result["prompt_token_ids"] == baseline["prompt_token_ids"]
+    for result_item, baseline_item in zip(
+        result["mm_kwargs"]["image"], baseline["mm_kwargs"]["image"]
+    ):
+        assert batched_tensors_equal(result_item.get_data(), baseline_item.get_data())
+    assert [item.length for item in result["mm_placeholders"]["image"]] == [
+        item.length for item in baseline["mm_placeholders"]["image"]
+    ]
+    assert len(result["mm_kwargs"]["image"]) == len(images)
+    assert len(result["mm_placeholders"]["image"]) == len(images)
+    assert cache.make_stats().hits > 0
 
 
 @pytest.mark.parametrize(

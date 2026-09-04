@@ -8,6 +8,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import (
     TYPE_CHECKING,
+    Any,
     ClassVar,
     Generic,
     NamedTuple,
@@ -1266,7 +1267,7 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
         cache: BaseMultiModalProcessorCache,
         mm_data_items: MultiModalDataItems,
         mm_hashes: MultiModalHashes,
-    ) -> tuple[MultiModalIsCached, MultiModalDataItems]:
+    ) -> tuple[MultiModalIsCached, MultiModalDataItems, MultiModalHashes]:
         mm_is_cached = {
             modality: cache.is_cached(hashes) for modality, hashes in mm_hashes.items()
         }
@@ -1280,9 +1281,12 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
             for modality, items_is_cached in mm_is_cached.items()
         }
 
-        mm_missing_data = {}
+        mm_missing_data = dict[str, list[Any]]()
+        mm_missing_hashes = dict[str, list[str]]()
         for modality, idxs in mm_missing_idxs.items():
             missing_modality_data = []
+            missing_modality_hashes = []
+            seen_hashes = set[str]()
             for idx in idxs:
                 data = mm_data_items[modality][idx]
                 if data is None:
@@ -1290,13 +1294,23 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
                         f"Cache miss for {modality} at index {idx} "
                         f"but data is not provided."
                     )
-                else:
-                    missing_modality_data.append(data)
+                item_hash = mm_hashes[modality][idx]
+                # `is_cached` checks all items before any cache update. Keep
+                # duplicate occurrences as misses so `_merge_mm_kwargs` can
+                # update the cache for every occurrence, but process each
+                # unique hash only once.
+                if item_hash in seen_hashes:
+                    continue
+
+                seen_hashes.add(item_hash)
+                missing_modality_data.append(data)
+                missing_modality_hashes.append(item_hash)
             mm_missing_data[modality] = missing_modality_data
+            mm_missing_hashes[modality] = missing_modality_hashes
 
         mm_missing_items = self.info.parse_mm_data(mm_missing_data, validate=False)
 
-        return mm_is_cached, mm_missing_items
+        return mm_is_cached, mm_missing_items, mm_missing_hashes
 
     def _recompute_cached_prompt_update(
         self,
@@ -1314,6 +1328,7 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
         cache: BaseMultiModalProcessorCache,
         mm_hashes: MultiModalHashes,
         mm_is_cached: MultiModalIsCached,
+        mm_missing_hashes: MultiModalHashes,
         mm_missing_kwargs: MultiModalKwargsItems,
         mm_missing_prompt_updates: MultiModalPromptUpdates,
     ) -> tuple[MultiModalKwargsOptionalItems, MultiModalPromptUpdates]:
@@ -1323,7 +1338,14 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
             for item_hash in hashes:
                 cache.touch_sender_cache_item(item_hash)
 
-        mm_missing_next_idx = defaultdict[str, int](lambda: 0)
+        # `mm_missing_hashes` has one entry per unique item sent to HF. Use the
+        # hash to reuse that processed item for every occurrence in the request.
+        missing_idxs_by_hash = {
+            modality: {
+                item_hash: item_idx for item_idx, item_hash in enumerate(missing_hashes)
+            }
+            for modality, missing_hashes in mm_missing_hashes.items()
+        }
 
         merged_kwargs = defaultdict[str, list[MultiModalKwargsItem | None]](list)
         merged_prompt_updates = defaultdict[str, list[Sequence[ResolvedPromptUpdate]]](
@@ -1335,11 +1357,9 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
 
             for item_idx, item_hash in enumerate(hashes):
                 if not mm_is_cached[modality][item_idx]:
-                    missing_next_idx = mm_missing_next_idx[modality]
-                    missing_kwargs_item = missing_kwargs[missing_next_idx]
-                    missing_updates_item = missing_prompt_updates[missing_next_idx]
-
-                    mm_missing_next_idx[modality] += 1
+                    missing_idx = missing_idxs_by_hash[modality][item_hash]
+                    missing_kwargs_item = missing_kwargs[missing_idx]
+                    missing_updates_item = missing_prompt_updates[missing_idx]
 
                     item = missing_kwargs_item, missing_updates_item
                 else:
@@ -1421,7 +1441,11 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
             )
 
         with timing_ctx.record("get_cache_missing_items"):
-            mm_is_cached, mm_missing_data_items = self._get_cache_missing_items(
+            (
+                mm_is_cached,
+                mm_missing_data_items,
+                mm_missing_hashes,
+            ) = self._get_cache_missing_items(
                 cache=cache,
                 mm_data_items=inputs.mm_data_items,
                 mm_hashes=mm_hashes,
@@ -1454,6 +1478,7 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
                 cache,
                 mm_hashes=mm_hashes,
                 mm_is_cached=mm_is_cached,
+                mm_missing_hashes=mm_missing_hashes,
                 mm_missing_kwargs=mm_missing_kwargs,
                 mm_missing_prompt_updates=mm_missing_prompt_updates,
             )
