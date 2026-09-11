@@ -514,7 +514,14 @@ class PCPManager:
             )
         # Local logits are never sampled. The complete hidden-state tensor is
         # restored first and sampled with the untouched global InputBatch.
-        logits_indices = local_query_start_loc[1:] - 1
+        # Ranks can receive no tokens for short prefills (e.g. PCP=4 with a
+        # single-token request). Such ranks must expose no logits rather than
+        # using ``-1``, which aliases the final padded row in tensor indexing.
+        logits_indices = (
+            local_query_start_loc[1:] - 1
+            if num_local_tokens > 0
+            else input_buffers.query_start_loc[:0]
+        )
 
         local_prefill_len_np = global_batch.prefill_len_np[
             local_to_global_batch_req_idx_np

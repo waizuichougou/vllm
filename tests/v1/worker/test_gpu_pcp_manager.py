@@ -53,6 +53,36 @@ def test_replicated_decode_piecewise_graph_padding(monkeypatch):
     )
 
 
+def test_empty_pcp_rank_has_no_logits(monkeypatch):
+    """A rank with no short-prefill chunk must not expose a -1 logit index."""
+    manager = PCPManager(
+        pcp_world_size=2,
+        pcp_rank=1,
+        device=torch.device("cpu"),
+        max_num_reqs=2,
+        max_num_tokens=2,
+    )
+    monkeypatch.setattr(pcp_manager_module, "async_copy_to_gpu", _copy_to_cpu)
+
+    global_buffers = InputBuffers(2, 2, torch.device("cpu"))
+    global_batch = _make_global_decode_batch([0], global_buffers, torch.device("cpu"))
+    global_batch = replace(
+        global_batch,
+        num_scheduled_tokens=np.array([1], dtype=np.int32),
+        num_tokens=1,
+        num_tokens_after_padding=1,
+        query_start_loc_np=np.array([0, 1], dtype=np.int32),
+        prefill_len_np=np.array([1], dtype=np.int32),
+        is_prefilling_np=np.array([True], dtype=np.bool_),
+        has_prefill=True,
+    )
+
+    local_batch = manager.partition_batch(global_batch, padded_num_tokens=1)
+
+    assert local_batch.num_tokens == 0
+    assert local_batch.logits_indices.numel() == 0
+
+
 def test_input_buffers_are_exposed_for_cudagraph_capture():
     manager = PCPManager(
         pcp_world_size=2,
