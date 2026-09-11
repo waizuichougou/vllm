@@ -1864,6 +1864,7 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             raise
 
         self.core_engines.extend(new_core_engines)
+        self._track_new_engine_ranks(new_core_engines)
         # Update the parallel config
         parallel_config = self.vllm_config.parallel_config
         parallel_config.data_parallel_size = new_data_parallel_size
@@ -1884,6 +1885,12 @@ class DPLBAsyncMPClient(DPAsyncMPClient):
             new_data_parallel_size,
         )
         await self.resume_scheduler_async()
+
+    def _track_new_engine_ranks(self, new_core_engines: list[EngineIdentity]) -> None:
+        """Keep rank-indexed client state aligned with newly added engines."""
+        self.engine_ranks_managed.extend(
+            int.from_bytes(engine, "little") for engine in new_core_engines
+        )
 
     async def _prepare_scale_down_elastic_ep(self, new_data_parallel_size: int) -> None:
         self._setup_elastic_ep_reconfig_bootstrap()

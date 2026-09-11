@@ -259,6 +259,18 @@ def test_dplb_burst_round_robins_despite_snapshot_rebinds():
     assert sorted(client.engine_inflight.values()) == [2, 2, 2, 2]
 
 
+def test_dplb_scale_up_tracks_new_engine_ranks():
+    """Scale-up must include new engines in the managed-rank state."""
+    client = _make_dplb_client(num_engines=2)
+    client.engine_ranks_managed = [0, 1]
+
+    new_core_engines = [bytes([2, 0]), bytes([3, 0])]
+    client.core_engines.extend(new_core_engines)
+    client._track_new_engine_ranks(new_core_engines)
+
+    assert client.engine_ranks_managed == [0, 1, 2, 3]
+
+
 @pytest.mark.asyncio
 async def test_dplb_scale_down_routes_after_stale_stats_snapshot():
     """A coordinator snapshot during scale-down must only route to survivors."""
