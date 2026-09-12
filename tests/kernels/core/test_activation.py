@@ -54,6 +54,17 @@ def test_masked_moe_activation_rejects_unsupported_activation() -> None:
         )
 
 
+def test_relu2_no_mul_does_not_mutate_input() -> None:
+    input = torch.tensor([[-2.0, 3.0, -4.0, 5.0]])
+    original = input.clone()
+    output = torch.empty_like(input)
+
+    apply_moe_activation(MoEActivation.RELU2_NO_MUL, output, input)
+
+    torch.testing.assert_close(input, original)
+    torch.testing.assert_close(output, torch.tensor([[0.0, 9.0, 0.0, 25.0]]))
+
+
 def test_moe_silu_clamp_uses_native_xpu_fallback(
     default_vllm_config, monkeypatch
 ) -> None:

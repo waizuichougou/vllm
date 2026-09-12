@@ -399,8 +399,10 @@ def apply_moe_activation(
     elif activation == MoEActivation.GELU_TANH_NO_MUL:
         output.copy_(F.gelu(input, approximate="tanh"))
     elif activation == MoEActivation.RELU2_NO_MUL:
-        F.relu(input, inplace=True)
-        torch.square(input, out=output)
+        # Do not mutate the projection buffer: callers may reuse it for
+        # residuals, logging, or another fused-MoE branch.
+        torch.clamp_min(input, 0, out=output)
+        torch.square(output, out=output)
     else:
         raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
