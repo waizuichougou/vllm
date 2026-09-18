@@ -77,6 +77,14 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
 
     draft_vllm_config = replace(
         vllm_config,
+        kernel_config=(
+            replace(
+                vllm_config.kernel_config,
+                moe_backend=speculative_config.moe_backend,
+            )
+            if speculative_config.moe_backend is not None
+            else vllm_config.kernel_config
+        ),
         parallel_config=_get_dspark_parallel_config(
             vllm_config.parallel_config,
             speculative_config.draft_parallel_config.tensor_parallel_size,
