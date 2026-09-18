@@ -856,9 +856,13 @@ class Scheduler(SchedulerInterface):
                 if input_budget <= draft_slots:
                     break
                 # Paused streaming sessions (WAITING_FOR_STREAMING_REQ) are not
-                # in `running` but still hold a model-runner request slot.
-                num_running = len(self.running) + self.num_waiting_for_streaming_input
-                if num_running >= self.max_num_active_reqs:
+                # active, but still hold a model-runner request slot.
+                num_running = len(self.running)
+                num_occupied_slots = num_running + self.num_waiting_for_streaming_input
+                if (
+                    num_running >= self.max_num_active_reqs
+                    or num_occupied_slots >= self.max_num_running_reqs
+                ):
                     break
 
                 request_queue = self._select_waiting_queue_for_scheduling()

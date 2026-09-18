@@ -125,6 +125,50 @@ def test_streaming_pause_does_not_over_admit_worker_slot():
     assert other in scheduler.waiting
 
 
+def test_streaming_pause_does_not_consume_active_admission_capacity():
+    """A paused session consumes a worker slot, but is not RUNNING work."""
+    stop_token = 7
+    scheduler = create_scheduler(
+        max_num_seqs=4,
+        max_num_active_seqs=1,
+        use_v2_model_runner=True,
+    )
+    slots = WorkerSlots(max_num_reqs=4)
+
+    (session,) = create_requests(
+        num_requests=1,
+        num_tokens=4,
+        req_ids=["session"],
+        stop_token_ids=[stop_token],
+        max_tokens=16,
+    )
+    session.resumable = True
+    scheduler.add_request(session)
+
+    output = scheduler.schedule()
+    slots.apply(output)
+    scheduler.update_from_output(
+        output, _model_runner_output(["session"], [[stop_token]])
+    )
+    assert session.status == RequestStatus.WAITING_FOR_STREAMING_REQ
+    assert len(scheduler.running) == 0
+
+    (other,) = create_requests(
+        num_requests=1,
+        num_tokens=4,
+        req_ids=["other"],
+        max_tokens=16,
+    )
+    scheduler.add_request(other)
+
+    output = scheduler.schedule()
+    slots.apply(output)
+
+    assert [req.req_id for req in output.scheduled_new_reqs] == ["other"]
+    assert len(scheduler.running) == scheduler.max_num_active_reqs == 1
+    assert len(slots.occupied) == 2
+
+
 def test_reset_prefix_cache_priority_does_not_over_admit_worker_slot():
     """reset_prefix_cache(reset_running_requests=True) force-preempts the running
     request out-of-band; under priority scheduling a higher-priority newcomer
